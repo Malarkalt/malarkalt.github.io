@@ -222,6 +222,6 @@ function render() {
     action,
     me ? h("p", { class: "hint", style: "text-align:center" },
       "This browser remembers you. To come back later, reopen this link, use the link in your email, or go to ",
-      h("a", { href: "index.html#mine" }, "My gifts"), ".") : null,
+      h("a", { href: "mine.html" }, "My gifts"), ".") : null,
   );
 }
