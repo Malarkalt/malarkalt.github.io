@@ -67,6 +67,16 @@
             <input id="fDue" type="date" required />
           </div>
         </div>
+        <div class="grid2">
+          <div class="field">
+            <label for="fHostName">Your name (shown on the listing)</label>
+            <input id="fHostName" maxlength="60" placeholder="e.g. Sam" />
+          </div>
+          <div class="field">
+            <label class="check"><input type="checkbox" id="fIncludeHost" checked /> Include me in the split</label>
+            <p class="hint" style="margin-top:.2rem">Turn this off if you're only organizing and not chipping in.</p>
+          </div>
+        </div>
         <div class="field">
           <label for="fDesc">Description</label>
           <textarea id="fDesc" maxlength="5000" placeholder="What's the occasion? Anything people should know?"></textarea>
