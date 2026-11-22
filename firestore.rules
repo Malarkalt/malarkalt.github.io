@@ -1,0 +1,88 @@
+rules_version = '2';
+
+// Paste this whole file into Firebase console → Firestore Database → Rules, then click Publish.
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function signedIn() { return request.auth != null; }
+    function isPasswordUser() {
+      return signedIn() && request.auth.token.firebase.sign_in_provider == 'password';
+    }
+    function eventPath(eid) { return /databases/$(database)/documents/events/$(eid); }
+    function hostBefore(eid) {
+      return signedIn() && exists(eventPath(eid)) && get(eventPath(eid)).data.hostUid == request.auth.uid;
+    }
+    function hostAfter(eid) {
+      return signedIn() && existsAfter(eventPath(eid)) && getAfter(eventPath(eid)).data.hostUid == request.auth.uid;
+    }
+    function validEvent(d) {
+      return d.hostUid is string
+        && d.title is string && d.title.size() >= 1 && d.title.size() <= 120
+        && d.itemName is string && d.itemName.size() <= 200
+        && d.itemUrl is string && d.itemUrl.size() <= 2000
+        && d.totalCost is number && d.totalCost > 0 && d.totalCost < 100000000
+        && d.currency is string && d.currency.size() <= 5
+        && d.dueDate is string && d.dueDate.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}$')
+        && d.description is string && d.description.size() <= 5000
+        && d.paymentType is string && d.paymentType.size() >= 1 && d.paymentType.size() <= 100
+        && d.paymentAddress is string && d.paymentAddress.size() >= 1 && d.paymentAddress.size() <= 500
+        && d.status in ['active', 'archived']
+        && d.joinOpen is bool;
+    }
+
+    match /events/{eid} {
+      // Anyone with the link can view a listing; only the host can list their own.
+      allow get: if true;
+      allow list: if signedIn() && resource.data.hostUid == request.auth.uid;
+      allow create: if isPasswordUser()
+        && request.resource.data.hostUid == request.auth.uid
+        && validEvent(request.resource.data);
+      allow update: if signedIn()
+        && resource.data.hostUid == request.auth.uid
+        && request.resource.data.hostUid == resource.data.hostUid
+        && validEvent(request.resource.data);
+      allow delete: if signedIn() && resource.data.hostUid == request.auth.uid;
+
+      // Invite key — only the host can see or change it.
+      match /secret/{docId} {
+        allow read: if hostBefore(eid);
+        allow write: if hostBefore(eid) || hostAfter(eid);
+      }
+
+      // Public part of each participant: name, status, paid.
+      match /participants/{uid} {
+        allow read: if true;
+        allow create: if signedIn() && request.auth.uid == uid
+          && get(eventPath(eid)).data.status == 'active'
+          && get(eventPath(eid)).data.joinOpen == true
+          && request.resource.data.keys().hasOnly(['name', 'status', 'paid', 'joinedAt', 'hostNotified', 'approvedNotified'])
+          && request.resource.data.name is string
+          && request.resource.data.name.size() >= 1 && request.resource.data.name.size() <= 60
+          && request.resource.data.status == 'pending'
+          && request.resource.data.paid == false
+          && request.resource.data.hostNotified == false
+          && request.resource.data.approvedNotified == false
+          && request.resource.data.joinedAt == request.time
+          && existsAfter(/databases/$(database)/documents/events/$(eid)/private/$(uid));
+        allow update: if hostBefore(eid)
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'paid'])
+          && request.resource.data.status in ['pending', 'approved']
+          && request.resource.data.paid is bool;
+        allow delete: if (signedIn() && request.auth.uid == uid) || hostBefore(eid);
+      }
+
+      // Private part: the email. Only that person and the host can read it.
+      match /private/{uid} {
+        allow read: if (signedIn() && request.auth.uid == uid) || hostBefore(eid);
+        allow create: if signedIn() && request.auth.uid == uid
+          && request.resource.data.keys().hasOnly(['email', 'inviteKey'])
+          && request.resource.data.email is string
+          && request.resource.data.email.size() <= 200
+          && request.resource.data.email.matches('^[^@ ]+@[^@ ]+[.][^@ ]+$')
+          && request.resource.data.inviteKey == get(/databases/$(database)/documents/events/$(eid)/secret/invite).data.key
+          && existsAfter(/databases/$(database)/documents/events/$(eid)/participants/$(uid));
+        allow delete: if (signedIn() && request.auth.uid == uid) || hostBefore(eid);
+      }
+    }
+  }
+}

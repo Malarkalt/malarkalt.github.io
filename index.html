@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>SplitList · Chip in on gifts together</title>
+  <meta name="description" content="Split the cost of a gift with friends. Make a listing, share a link, and everyone sees their share." />
+  <link rel="stylesheet" href="css/style.css" />
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="index.html">Split<span>List</span></a>
+  </header>
+
+  <main class="wrap">
+    <div class="landing">
+      <section>
+        <h1>Chip in on the gift, together.</h1>
+        <p class="lead">Make a listing for a present, share one link, and everyone can see who's in and what each person owes.</p>
+        <ul class="steps">
+          <li><span>1</span>Create a listing with the item, the total, and how to pay you.</li>
+          <li><span>2</span>Send the invite link. Friends tap <b>Add me</b>.</li>
+          <li><span>3</span>Approve people. The split updates automatically.</li>
+          <li><span>4</span>On the due date, everyone gets an email reminder with the payment info.</li>
+        </ul>
+      </section>
+
+      <section class="card">
+        <div class="tabs" role="tablist" style="margin-top:0">
+          <button class="tab active" data-tab="signin">Sign in</button>
+          <button class="tab" data-tab="signup">Create account</button>
+        </div>
+
+        <!-- Sign in -->
+        <form id="signinForm" class="form" style="margin-top:1.25rem" novalidate>
+          <div class="field">
+            <label for="siEmail">Email</label>
+            <input id="siEmail" type="email" autocomplete="email" required />
+          </div>
+          <div class="field">
+            <label for="siPass">Password</label>
+            <input id="siPass" type="password" autocomplete="current-password" required />
+          </div>
+          <div class="form-error" id="siError"></div>
+          <button class="btn big" type="submit">Sign in</button>
+          <p class="hint" style="text-align:center"><button type="button" class="linkbtn" id="forgotBtn">Forgot password?</button></p>
+        </form>
+
+        <!-- Sign up -->
+        <form id="signupForm" class="form hidden" style="margin-top:1.25rem" novalidate>
+          <div class="field">
+            <label for="suEmail">Email</label>
+            <input id="suEmail" type="email" autocomplete="email" required />
+          </div>
+          <div class="field">
+            <label for="suPass">Password</label>
+            <input id="suPass" type="password" autocomplete="new-password" required />
+            <ul class="checklist" id="pwChecks">
+              <li data-rule="len">At least 12 characters</li>
+              <li data-rule="lower">A lowercase letter</li>
+              <li data-rule="upper">An uppercase letter</li>
+              <li data-rule="num">A number</li>
+              <li data-rule="sym">A symbol (like ! ? # @)</li>
+            </ul>
+          </div>
+          <div class="field">
+            <label for="suPass2">Confirm password</label>
+            <input id="suPass2" type="password" autocomplete="new-password" required />
+          </div>
+          <div class="form-error" id="suError"></div>
+          <button class="btn big" type="submit">Create account</button>
+          <p class="hint">Accounts are only needed to host a listing. Friends who chip in don't need one.</p>
+        </form>
+
+        <!-- Reset -->
+        <form id="resetForm" class="form hidden" style="margin-top:1.25rem" novalidate>
+          <p>Enter your email and we'll send you a link to reset your password.</p>
+          <div class="field">
+            <label for="rsEmail">Email</label>
+            <input id="rsEmail" type="email" autocomplete="email" required />
+          </div>
+          <div class="form-error" id="rsError"></div>
+          <button class="btn big" type="submit">Send reset link</button>
+          <p class="hint" style="text-align:center"><button type="button" class="linkbtn" id="backToSignin">← Back to sign in</button></p>
+        </form>
+      </section>
+    </div>
+  </main>
+
+  <script type="module" src="js/auth.js"></script>
+</body>
+</html>

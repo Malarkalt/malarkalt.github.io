@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Dashboard · SplitList</title>
+  <link rel="stylesheet" href="css/style.css" />
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="dashboard.html">Split<span>List</span></a>
+    <div class="topbar-right">
+      <span id="who"></span>
+      <button id="signOutBtn" class="btn ghost sm">Sign out</button>
+    </div>
+  </header>
+
+  <main class="wrap">
+    <div id="verifyBanner" class="banner warn hidden">
+      <strong>Please verify your email</strong>
+      We sent a link to your inbox so we know where to email you about join requests.
+      <button id="resendVerify" class="linkbtn">Resend it</button>
+    </div>
+
+    <!-- List of listings -->
+    <section id="listView">
+      <div class="row between wrapflex">
+        <h1>Your listings</h1>
+        <button id="newBtn" class="btn">+ New listing</button>
+      </div>
+      <div class="tabs">
+        <button class="tab active" data-filter="active">Active</button>
+        <button class="tab" data-filter="archived">Archived</button>
+      </div>
+      <div id="eventList"></div>
+    </section>
+
+    <!-- Create / edit form -->
+    <section id="formView" class="hidden narrow">
+      <button class="linkbtn back" id="formBack">← Back</button>
+      <h1 id="formTitle">New listing</h1>
+      <form id="eventForm" class="card form" novalidate>
+        <div class="field">
+          <label for="fTitle">Listing name *</label>
+          <input id="fTitle" maxlength="120" placeholder="e.g. Maya's 30th birthday gift" required />
+        </div>
+        <div class="grid2">
+          <div class="field">
+            <label for="fItemName">Item name</label>
+            <input id="fItemName" maxlength="200" placeholder="e.g. Espresso machine" />
+          </div>
+          <div class="field">
+            <label for="fItemUrl">Link to the item</label>
+            <input id="fItemUrl" type="url" maxlength="2000" placeholder="https://…" />
+          </div>
+        </div>
+        <div class="grid2">
+          <div class="field">
+            <label for="fCost">Total cost *</label>
+            <div class="grid-cost">
+              <input id="fCurrency" maxlength="5" value="$" aria-label="Currency symbol" />
+              <input id="fCost" type="number" min="0.01" step="0.01" inputmode="decimal" placeholder="240.00" required />
+            </div>
+          </div>
+          <div class="field">
+            <label for="fDue">Payment due date *</label>
+            <input id="fDue" type="date" required />
+          </div>
+        </div>
+        <div class="field">
+          <label for="fDesc">Description</label>
+          <textarea id="fDesc" maxlength="5000" placeholder="What's the occasion? Anything people should know?"></textarea>
+        </div>
+        <div class="grid2">
+          <div class="field">
+            <label for="fPayType">Payment type *</label>
+            <input id="fPayType" maxlength="100" list="payTypes" placeholder="e.g. Interac e-Transfer" required />
+            <datalist id="payTypes">
+              <option value="Interac e-Transfer"></option>
+              <option value="PayPal"></option>
+              <option value="Venmo"></option>
+              <option value="Cash App"></option>
+              <option value="Zelle"></option>
+              <option value="Bank transfer"></option>
+              <option value="Cash"></option>
+            </datalist>
+          </div>
+          <div class="field">
+            <label for="fPayAddr">Payment address *</label>
+            <input id="fPayAddr" maxlength="500" placeholder="e.g. you@email.com or @handle" required />
+          </div>
+        </div>
+        <div class="form-error" id="formError"></div>
+        <div class="row">
+          <button class="btn" type="submit" id="formSubmit">Create listing</button>
+          <button class="btn ghost" type="button" id="formCancel">Cancel</button>
+        </div>
+      </form>
+    </section>
+
+    <!-- Detail / admin view for one listing -->
+    <section id="detailView" class="hidden"></section>
+  </main>
+
+  <script type="module" src="js/dashboard.js"></script>
+</body>
+</html>
