@@ -90,7 +90,9 @@ for (const evDoc of events.docs) {
   const partsSnap = await evDoc.ref.collection("participants").get();
   const parts = partsSnap.docs.map((d) => ({ id: d.id, ref: d.ref, ...d.data() }));
   const approved = parts.filter((p) => p.status === "approved");
-  const share = approved.length ? ev.totalCost / approved.length : ev.totalCost;
+  // The host is part of the split unless they switched "Include me in the split" off.
+  const people = approved.length + (ev.includeHost === false ? 0 : 1);
+  const share = people ? ev.totalCost / people : ev.totalCost;
   const emailOf = async (uid) => (await evDoc.ref.collection("private").doc(uid).get()).data()?.email || null;
 
   // 1) New join requests → email host
@@ -103,8 +105,16 @@ for (const evDoc of events.docs) {
           `${p.name}${who ? ` (${who})` : ""} asked to join "${ev.title}".\n\nApprove or decline them on your dashboard: ${dashUrl}`,
           layout(`New request: ${esc(p.name)}`,
             `<p><b>${esc(p.name)}</b>${who ? ` (${esc(who)})` : ""} asked to join <b>${esc(ev.title)}</b>.</p>
-             <p>If you approve them, the split will be <b>${money(ev.totalCost / (approved.length + 1), cur)}</b> each across ${approved.length + 1} people.</p>`,
+             <p>If you approve them, the split will be <b>${money(ev.totalCost / (people + 1), cur)}</b> each across ${people + 1} people${ev.includeHost === false ? "" : " (including you)"}.</p>`,
             { label: "Review on your dashboard", url: dashUrl }));
+      }
+      if (who) {
+        await attempt("join confirmation", () => send(who, `Request sent: ${ev.title}`,
+          `Hi ${p.name},\n\nYou asked to join "${ev.title}". The host has been notified and will approve you soon.\n\nYou can check the listing anytime (split, details and payment info) here:\n${listingUrl}\n\nSave this email so you can find the link later.`,
+          layout(`Request sent, ${esc(p.name)}`,
+            `<p>You asked to join <b>${esc(ev.title)}</b>. The host has been notified and will approve you soon. We'll email you when that happens.</p>
+             <p>You can check the listing anytime to see the latest split, details and payment info. <b>Save this email</b> so you can always find it.</p>`,
+            { label: "View the listing", url: listingUrl })));
       }
       await p.ref.update({ hostNotified: true });
     });
@@ -116,10 +126,10 @@ for (const evDoc of events.docs) {
       const to = await emailOf(p.id);
       if (to) {
         await send(to, `You're in: ${ev.title}`,
-          `Hi ${p.name},\n\nThe host approved you for "${ev.title}". Your share is currently ${money(share, cur)} (split ${approved.length} ways — it can change if more people join).\n\nPayment is due ${prettyDate(ev.dueDate)}.\nPay with: ${ev.paymentType} — ${ev.paymentAddress}\n\nSee the listing: ${listingUrl}`,
+          `Hi ${p.name},\n\nThe host approved you for "${ev.title}". Your share is currently ${money(share, cur)} (split ${people} ways — it can change if more people join).\n\nPayment is due ${prettyDate(ev.dueDate)}.\nPay with: ${ev.paymentType} — ${ev.paymentAddress}\n\nSee the listing: ${listingUrl}`,
           layout(`You're in, ${esc(p.name)}! 🎉`,
             `<p>The host approved you for <b>${esc(ev.title)}</b>.</p>
-             <p>Your share right now: <b style="font-size:18px">${money(share, cur)}</b><br><span style="color:#687082;font-size:13px">Split ${approved.length} ways — this can go down if more people join.</span></p>
+             <p>Your share right now: <b style="font-size:18px">${money(share, cur)}</b><br><span style="color:#687082;font-size:13px">Split ${people} ways — this can go down if more people join.</span></p>
              <p>Payment is due <b>${prettyDate(ev.dueDate)}</b>. You'll get a reminder that day.</p>${payBlock(ev)}`,
             { label: "View the listing", url: listingUrl }));
       }
