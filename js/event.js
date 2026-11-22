@@ -1,5 +1,6 @@
 import {
   auth, db, $, h, money, safeUrl, formatDue, todayISO, setCookie, getCookie, toast, copyText, friendlyError, byJoined,
+  hostIncluded, hostLabel, splitOf, rememberListing, forgetListing,
 } from "./common.js";
 import { onAuthStateChanged, signInAnonymously } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
 import {
@@ -45,13 +46,14 @@ function subscribe() {
     if (!s.exists()) { message("Listing not found", "This listing may have been deleted by the host."); ev = null; return; }
     ev = { id: s.id, ...s.data() };
     document.title = ev.title + " · SplitList";
+    if (me) rememberListing(eid, ev.title);
     render();
   }, (e) => message("Can't load listing", friendlyError(e)));
 
   onSnapshot(collection(db, "events", eid, "participants"), (s) => {
     parts = s.docs.map((d) => ({ id: d.id, ...d.data() }));
     me = parts.find((p) => p.id === uid) || null;
-    if (me) { wasMember = true; setCookie("sl_joined_" + eid, "1", 365); }
+    if (me) { wasMember = true; if (ev) rememberListing(eid, ev.title); }
     render();
   }, () => {});
 }
@@ -90,6 +92,7 @@ async function onJoin(e) {
     await b.commit();
     setCookie("sl_name", name);
     setCookie("sl_email", email);
+    rememberListing(eid, ev?.title);
     showForm = false;
     window.scrollTo({ top: 0, behavior: "smooth" });
     toast("Request sent! The host will be emailed to approve you.");
@@ -113,7 +116,7 @@ async function withdraw() {
     b.delete(doc(db, "events", eid, "private", uid));
     await b.commit();
     wasMember = false;
-    setCookie("sl_joined_" + eid, "", 0);
+    forgetListing(eid);
     toast("You've withdrawn.");
   } catch (e) {
     toast(friendlyError(e), "error");
@@ -129,8 +132,7 @@ function render() {
   const cur = ev.currency || "$";
   const approved = parts.filter((p) => p.status === "approved").sort(byJoined);
   const othersPending = parts.filter((p) => p.status === "pending" && p.id !== uid).length;
-  const n = approved.length;
-  const share = n ? ev.totalCost / n : ev.totalCost;
+  const { people: n, share } = splitOf(ev, approved.length);
   const isPending = me?.status === "pending";
   const isApproved = me?.status === "approved";
   const myShare = isPending ? ev.totalCost / (n + 1) : share;
@@ -144,19 +146,23 @@ function render() {
   if (closed) banner = h("div", { class: "banner warn" }, h("strong", {}, "This listing is closed"), "The host has archived it.");
   else if (isPending) banner = h("div", { class: "banner warn" },
     h("strong", {}, "⏳ Waiting for the host to approve you"),
-    `The host has been emailed. Once you're approved, your share will be about ${money(myShare, cur)}. You'll get an email when it happens.`);
+    `The host has been emailed. Once you're approved, your share will be about ${money(myShare, cur)}. We've also emailed you a link to this page so you can check back anytime.`);
   else if (isApproved) banner = h("div", { class: "banner ok" },
     h("strong", {}, `✅ You're in! Your share is ${money(share, cur)}`),
     me.paid ? "The host has marked you as paid. Thank you!" : `Please pay by ${formatDue(ev.dueDate)} using the payment info below.`);
   else if (wasMember && !withdrawing && !joining) banner = h("div", { class: "banner danger" },
     h("strong", {}, "You're no longer on this listing"), "The host declined or removed your request.");
 
-  // People list
-  const rows = approved.map((p) => h("li", { class: p.id === uid ? "me" : "" },
+  // People list (host first, if they're chipping in)
+  const rows = [];
+  if (hostIncluded(ev)) rows.push(h("li", {},
+    h("div", { class: "who" }, h("b", {}, hostLabel(ev))),
+    h("div", { class: "acts" }, h("span", { class: "badge accent" }, "Host"), h("span", { class: "amount" }, money(share, cur)))));
+  rows.push(...approved.map((p) => h("li", { class: p.id === uid ? "me" : "" },
     h("div", { class: "who" }, h("b", {}, p.name, p.id === uid ? " (you)" : "")),
     h("div", { class: "acts" },
       p.paid ? h("span", { class: "badge ok" }, "Paid") : null,
-      h("span", { class: "amount" }, money(share, cur)))));
+      h("span", { class: "amount" }, money(share, cur))))));
   if (isPending) rows.push(h("li", { class: "me pending" },
     h("div", { class: "who" }, h("b", {}, me.name, " (you)"), h("small", {}, "Pending approval — not counted in the split yet")),
     h("div", { class: "acts" }, h("span", { class: "badge warn" }, "Pending"), h("span", { class: "amount" }, money(myShare, cur)))));
@@ -191,7 +197,10 @@ function render() {
         h("div", {}, h("span", { class: "muted" }, "Total"), h("b", {}, money(ev.totalCost, cur))),
         h("div", {}, h("span", { class: "muted" }, "Pay by"), h("b", {}, formatDue(ev.dueDate)),
           ev.dueDate < today && !closed ? h("span", { class: "badge danger" }, "Past due") :
-          ev.dueDate === today && !closed ? h("span", { class: "badge warn" }, "Due today") : null))),
+          ev.dueDate === today && !closed ? h("span", { class: "badge warn" }, "Due today") : null)),
+      ev.updatedAt?.toDate ? h("p", { class: "hint", style: "margin-top:1rem" },
+        "Last updated " + ev.updatedAt.toDate().toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }),
+        " · this page updates live") : null),
 
     h("div", { class: "card" },
       h("h2", {}, "Current split"),
@@ -211,5 +220,8 @@ function render() {
       isApproved ? null : h("p", { class: "hint" }, "Please wait until the host approves you before sending money, so the split is right.")),
 
     action,
+    me ? h("p", { class: "hint", style: "text-align:center" },
+      "This browser remembers you. To come back later, reopen this link, use the link in your email, or go to ",
+      h("a", { href: "index.html#mine" }, "My gifts"), ".") : null,
   );
 }

@@ -1,5 +1,6 @@
 import {
   auth, db, $, $$, h, money, safeUrl, formatDue, todayISO, randomKey, toast, copyText, friendlyError, byJoined,
+  hostIncluded, hostLabel, splitOf,
 } from "./common.js";
 import { onAuthStateChanged, signOut, sendEmailVerification } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
 import {
@@ -15,6 +16,8 @@ let participants = [];
 let emails = {};
 let inviteKey;             // undefined = loading, null = missing
 let detailUnsubs = [];
+const counts = {};        // eventId -> { approved, pending }
+const countUnsubs = {};   // eventId -> unsubscribe
 
 // ---------- Auth ----------
 onAuthStateChanged(auth, (u) => {
@@ -28,6 +31,7 @@ onAuthStateChanged(auth, (u) => {
     query(collection(db, "events"), where("hostUid", "==", u.uid)),
     (snap) => {
       events = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+      syncCounts();
       renderList();
       if (current) renderDetail();
     },
@@ -73,10 +77,40 @@ function renderList() {
     h("button", { class: "card event-card", onclick: () => openDetail(ev.id) },
       h("h3", {}, ev.title),
       h("p", { class: "muted" }, ev.itemName || "—"),
+      cardStats(ev),
       h("div", { class: "row between" },
-        h("span", { class: "amount" }, money(ev.totalCost, ev.currency)),
+        h("span", { class: "muted" }, "Total " + money(ev.totalCost, ev.currency)),
         dueBadge(ev)),
     ))));
+}
+
+function cardStats(ev) {
+  const c = counts[ev.id];
+  if (!c) return h("div", { class: "card-stats muted" }, "Loading…");
+  const { people, share } = splitOf(ev, c.approved);
+  return h("div", { class: "card-stats" },
+    h("span", {}, `👥 ${people} ${people === 1 ? "person" : "people"}`),
+    h("span", { class: "amount" }, people ? money(share, ev.currency) + " each" : "—"),
+    c.pending ? h("span", { class: "badge warn" }, `${c.pending} request${c.pending === 1 ? "" : "s"}`) : null);
+}
+
+// Keep a live head-count for every listing so the cards show people + split.
+function syncCounts() {
+  const ids = new Set(events.map((e) => e.id));
+  for (const id of Object.keys(countUnsubs)) {
+    if (!ids.has(id)) { countUnsubs[id](); delete countUnsubs[id]; delete counts[id]; }
+  }
+  for (const id of ids) {
+    if (countUnsubs[id]) continue;
+    countUnsubs[id] = onSnapshot(collection(db, "events", id, "participants"), (s) => {
+      const ps = s.docs.map((d) => d.data());
+      counts[id] = {
+        approved: ps.filter((p) => p.status === "approved").length,
+        pending: ps.filter((p) => p.status === "pending").length,
+      };
+      renderList();
+    }, () => {});
+  }
 }
 
 function dueBadge(ev) {
@@ -104,6 +138,8 @@ function fillForm(ev = {}) {
   $("#fDesc").value = ev.description || "";
   $("#fPayType").value = ev.paymentType || "";
   $("#fPayAddr").value = ev.paymentAddress || "";
+  $("#fHostName").value = ev.hostName ?? (localStorage.getItem("sl_host_name") || "");
+  $("#fIncludeHost").checked = ev.id ? hostIncluded(ev) : true;
   $("#formError").textContent = "";
 }
 
@@ -135,6 +171,8 @@ function readForm() {
     description: $("#fDesc").value.trim(),
     paymentType: $("#fPayType").value.trim(),
     paymentAddress: $("#fPayAddr").value.trim(),
+    hostName: $("#fHostName").value.trim().slice(0, 60),
+    includeHost: $("#fIncludeHost").checked,
   };
   if (!data.title) return [null, "Give your listing a name."];
   if (data.itemUrl && !safeUrl(data.itemUrl)) return [null, "The item link should start with https://"];
@@ -148,6 +186,7 @@ $("#eventForm").addEventListener("submit", async (e) => {
   e.preventDefault();
   const [data, err] = readForm();
   if (err) { $("#formError").textContent = err; return; }
+  try { if (data.hostName) localStorage.setItem("sl_host_name", data.hostName); } catch {}
   const btn = $("#formSubmit");
   btn.disabled = true;
   try {
@@ -234,9 +273,11 @@ function renderDetail() {
   const cur = ev.currency || "$";
   const approved = participants.filter((p) => p.status === "approved").sort(byJoined);
   const pending = participants.filter((p) => p.status === "pending").sort(byJoined);
-  const share = approved.length ? ev.totalCost / approved.length : 0;
+  const { people, share } = splitOf(ev, approved.length);
+  const withHost = hostIncluded(ev);
   const paid = approved.filter((p) => p.paid);
-  const collected = share * paid.length;
+  const paidPeople = paid.length + (withHost ? 1 : 0); // the host's own share counts as covered
+  const collected = share * paidPeople;
   const pct = ev.totalCost ? Math.min(100, (collected / ev.totalCost) * 100) : 0;
   const archived = ev.status === "archived";
 
@@ -249,9 +290,9 @@ function renderDetail() {
 
     h("div", { class: "stats" },
       stat("Total", money(ev.totalCost, cur)),
-      stat("People in", String(approved.length)),
-      stat("Each pays", approved.length ? money(share, cur) : "—"),
-      stat("Paid", `${paid.length} / ${approved.length}`)),
+      stat("People in", String(people)),
+      stat("Each pays", people ? money(share, cur) : "—"),
+      stat("Paid", `${paidPeople} / ${people}`)),
     h("div", { class: "card" },
       h("div", { class: "row between" }, h("b", {}, "Collected so far"), h("span", { class: "amount" }, `${money(collected, cur)} of ${money(ev.totalCost, cur)}`)),
       h("div", { class: "progress" }, h("div", { style: `width:${pct}%` }))),
@@ -292,8 +333,11 @@ function renderDetail() {
     // Approved participants
     h("div", { class: "card" },
       h("h2", {}, "Participants"),
-      approved.length
-        ? h("ul", { class: "people" }, approved.map((p) => h("li", {},
+      withHost || approved.length
+        ? h("ul", { class: "people" }, withHost ? h("li", { class: "me" },
+          h("div", { class: "who" }, h("b", {}, hostLabel(ev), " (you)"), h("small", {}, "Host — your share counts as covered")),
+          h("div", { class: "acts" }, h("span", { class: "badge accent" }, "Host"), h("span", { class: "amount" }, money(share, cur)))) : null,
+          approved.map((p) => h("li", {},
           h("div", { class: "who" }, h("b", {}, p.name), h("small", {}, emails[p.id] || "")),
           h("div", { class: "acts" },
             h("span", { class: "amount" }, money(share, cur)),

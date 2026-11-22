@@ -70,6 +70,26 @@ export function getCookie(name) {
   return hit ? decodeURIComponent(hit.slice(name.length + 1)) : "";
 }
 
+// ---- "My gifts": listings this browser has joined, remembered in a cookie ----
+export function getMyListings() {
+  try { return JSON.parse(getCookie("sl_mine") || "[]").filter((x) => x && x.e); }
+  catch { return []; }
+}
+export function rememberListing(eid, title) {
+  const list = getMyListings().filter((x) => x.e !== eid);
+  list.unshift({ e: eid, t: String(title || "").slice(0, 60) });
+  setCookie("sl_mine", JSON.stringify(list.slice(0, 20)), 365);
+}
+export function forgetListing(eid) {
+  setCookie("sl_mine", JSON.stringify(getMyListings().filter((x) => x.e !== eid)), 365);
+}
+export const listingUrl = (eid) => {
+  const u = new URL("event.html", location.href);
+  u.search = "";
+  u.searchParams.set("e", eid);
+  return u.href;
+};
+
 let toastTimer;
 export function toast(msg, kind = "") {
   let t = $("#toast");
@@ -101,6 +121,14 @@ export function friendlyError(e) {
     "unavailable": "Can't reach the server. Check your connection.",
   };
   return map[code] || e?.message || "Something went wrong.";
+}
+
+/** The host is part of the split unless they turned "Include me in the split" off. */
+export const hostIncluded = (ev) => ev.includeHost !== false;
+export const hostLabel = (ev) => (ev.hostName || "").trim() || "Host";
+export function splitOf(ev, approvedCount) {
+  const people = approvedCount + (hostIncluded(ev) ? 1 : 0);
+  return { people, share: people ? ev.totalCost / people : 0 };
 }
 
 export const byJoined = (a, b) => (a.joinedAt?.toMillis?.() ?? Date.now()) - (b.joinedAt?.toMillis?.() ?? Date.now());
