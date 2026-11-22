@@ -146,10 +146,16 @@ function render() {
   if (closed) banner = h("div", { class: "banner warn" }, h("strong", {}, "This listing is closed"), "The host has archived it.");
   else if (isPending) banner = h("div", { class: "banner warn" },
     h("strong", {}, "⏳ Waiting for the host to approve you"),
-    `The host has been emailed. Once you're approved, your share will be about ${money(myShare, cur)}. We've also emailed you a link to this page so you can check back anytime.`);
+    h("p", { style: "margin:0 0 .5rem" }, `The host has been emailed. Once you're approved, your share will be about ${money(myShare, cur)}.`),
+    h("p", { style: "margin:0" }, "📧 A confirmation email from ", h("b", {}, "SplitList (splitlistthewebsite@gmail.com)"),
+      " has been sent to you with a link back to this listing. It can take up to 15 minutes and is most likely in your ",
+      h("b", {}, "spam or junk folder"), ". Mark it as \"Not spam\" so you also get the approval and payment reminder emails."));
   else if (isApproved) banner = h("div", { class: "banner ok" },
     h("strong", {}, `✅ You're in! Your share is ${money(share, cur)}`),
-    me.paid ? "The host has marked you as paid. Thank you!" : `Please pay by ${formatDue(ev.dueDate)} using the payment info below.`);
+    me.paid ? "The host has marked you as paid. Thank you!" : `Please pay by ${formatDue(ev.dueDate)} using the payment info below.`,
+    h("p", { style: "margin:.5rem 0 0" }, "📧 A confirmation email from ", h("b", {}, "SplitList (splitlistthewebsite@gmail.com)"),
+      " has been sent to you with a link back to this listing. It can take up to 15 minutes and is most likely in your ",
+      h("b", {}, "spam or junk folder"), ". Mark it as \"Not spam\" so you also get the payment reminder."));
   else if (wasMember && !withdrawing && !joining) banner = h("div", { class: "banner danger" },
     h("strong", {}, "You're no longer on this listing"), "The host declined or removed your request.");
 
