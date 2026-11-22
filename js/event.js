@@ -191,7 +191,7 @@ function render() {
       h("button", { class: "btn big", onclick: () => { showForm = true; render(); nameInput.focus(); } }, "Add me"));
   }
 
-  root.replaceChildren(
+  root.replaceChildren(...[
     banner,
 
     h("div", { class: "card" },
@@ -229,5 +229,5 @@ function render() {
     me ? h("p", { class: "hint", style: "text-align:center" },
       "This browser remembers you. To come back later, reopen this link, use the link in your email, or go to ",
       h("a", { href: "mine.html" }, "My gifts"), ".") : null,
-  );
+  ].filter(Boolean));  // skip empty parts so the page never shows "null"
 }
