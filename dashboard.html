@@ -4,6 +4,18 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Dashboard · SplitList</title>
+  <link rel="icon" href="favicon.png" type="image/png" />
+  <meta property="og:type" content="website" />
+  <meta property="og:site_name" content="SplitList" />
+  <meta property="og:title" content="SplitList · Chip in on the gift, together" />
+  <meta property="og:description" content="Share one link. Everyone sees who's in and what their share is." />
+  <meta property="og:image" content="https://www.splitlist.fyi/og-image.png" />
+  <meta property="og:image:width" content="1200" />
+  <meta property="og:image:height" content="630" />
+  <meta property="og:url" content="https://www.splitlist.fyi/" />
+  <meta name="twitter:card" content="summary_large_image" />
+  <meta name="twitter:image" content="https://www.splitlist.fyi/og-image.png" />
+  <meta name="theme-color" content="#0f766e" />
   <link rel="stylesheet" href="css/style.css" />
 </head>
 <body>
@@ -53,6 +65,20 @@
           <div class="field">
             <label for="fItemUrl">Link to the item</label>
             <input id="fItemUrl" type="url" maxlength="2000" placeholder="https://…" />
+          </div>
+        </div>
+        <div class="field">
+          <label>Picture</label>
+          <div class="pic-field">
+            <div class="pic-preview" id="picPreview"><span class="muted">No picture</span></div>
+            <div>
+              <div class="row wrapflex">
+                <label class="btn ghost sm" for="fPic" style="margin:0">Upload a picture</label>
+                <button type="button" class="btn ghost sm hidden" id="picRemove">Remove</button>
+              </div>
+              <input id="fPic" type="file" accept="image/*" class="hidden" />
+              <p class="hint" id="picHint">Optional. If you don't add one, we'll use the item's picture from its link (this can take ~10 minutes to appear, and some stores like Amazon may block it).</p>
+            </div>
           </div>
         </div>
         <div class="grid2">

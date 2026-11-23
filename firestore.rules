@@ -9,12 +9,16 @@ service cloud.firestore {
       return signedIn() && request.auth.token.firebase.sign_in_provider == 'password';
     }
     function eventPath(eid) { return /databases/$(database)/documents/events/$(eid); }
+    function partPath(eid, uid) { return /databases/$(database)/documents/events/$(eid)/participants/$(uid); }
     function hostBefore(eid) {
       return signedIn() && exists(eventPath(eid)) && get(eventPath(eid)).data.hostUid == request.auth.uid;
     }
     function hostAfter(eid) {
       return signedIn() && existsAfter(eventPath(eid)) && getAfter(eventPath(eid)).data.hostUid == request.auth.uid;
     }
+    // Fields only the email robot may write (reminder limit log, item thumbnail).
+    function robotOnly() { return ['reminderLog', 'thumbUrl', 'thumbFor']; }
+    function validName(n) { return n is string && n.size() >= 1 && n.size() <= 60; }
     function validEvent(d) {
       return d.hostUid is string
         && d.title is string && d.title.size() >= 1 && d.title.size() <= 120
@@ -27,7 +31,9 @@ service cloud.firestore {
         && d.paymentType is string && d.paymentType.size() >= 1 && d.paymentType.size() <= 100
         && d.paymentAddress is string && d.paymentAddress.size() >= 1 && d.paymentAddress.size() <= 500
         && d.status in ['active', 'archived']
-        && d.joinOpen is bool;
+        && d.joinOpen is bool
+        && (!('hostName' in d) || (d.hostName is string && d.hostName.size() <= 60))
+        && (!('imageData' in d) || (d.imageData is string && d.imageData.size() <= 400000));
     }
 
     match /events/{eid} {
@@ -36,10 +42,12 @@ service cloud.firestore {
       allow list: if signedIn() && resource.data.hostUid == request.auth.uid;
       allow create: if isPasswordUser()
         && request.resource.data.hostUid == request.auth.uid
+        && !request.resource.data.keys().hasAny(robotOnly())
         && validEvent(request.resource.data);
       allow update: if signedIn()
         && resource.data.hostUid == request.auth.uid
         && request.resource.data.hostUid == resource.data.hostUid
+        && !request.resource.data.diff(resource.data).affectedKeys().hasAny(robotOnly())
         && validEvent(request.resource.data);
       allow delete: if signedIn() && resource.data.hostUid == request.auth.uid;
 
@@ -49,39 +57,71 @@ service cloud.firestore {
         allow write: if hostBefore(eid) || hostAfter(eid);
       }
 
-      // Public part of each participant: name, status, paid.
+      // Public part of each participant: name, status, paid. (No emails here.)
       match /participants/{uid} {
         allow read: if true;
+
+        // A guest asking to join (must also create their private doc + email lock in the same batch).
         allow create: if signedIn() && request.auth.uid == uid
           && get(eventPath(eid)).data.status == 'active'
           && get(eventPath(eid)).data.joinOpen == true
           && request.resource.data.keys().hasOnly(['name', 'status', 'paid', 'joinedAt', 'hostNotified', 'approvedNotified'])
-          && request.resource.data.name is string
-          && request.resource.data.name.size() >= 1 && request.resource.data.name.size() <= 60
+          && validName(request.resource.data.name)
           && request.resource.data.status == 'pending'
           && request.resource.data.paid == false
           && request.resource.data.hostNotified == false
           && request.resource.data.approvedNotified == false
           && request.resource.data.joinedAt == request.time
           && existsAfter(/databases/$(database)/documents/events/$(eid)/private/$(uid));
+
+        // The host adding someone by name only (no email, no notifications).
+        allow create: if hostBefore(eid)
+          && request.resource.data.keys().hasOnly(['name', 'status', 'paid', 'joinedAt', 'updatedAt', 'hostNotified', 'approvedNotified', 'addedByHost'])
+          && validName(request.resource.data.name)
+          && request.resource.data.status == 'approved'
+          && request.resource.data.paid is bool
+          && request.resource.data.hostNotified == true
+          && request.resource.data.approvedNotified == true
+          && request.resource.data.addedByHost == true;
+
         allow update: if hostBefore(eid)
-          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'paid'])
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'paid', 'updatedAt'])
           && request.resource.data.status in ['pending', 'approved']
           && request.resource.data.paid is bool;
         allow delete: if (signedIn() && request.auth.uid == uid) || hostBefore(eid);
       }
 
-      // Private part: the email. Only that person and the host can read it.
+      // Private part: the email. Nobody can read another person's email — not the host, not other guests.
+      // Only the email robot (which runs with admin access) reads these.
       match /private/{uid} {
-        allow read: if (signedIn() && request.auth.uid == uid) || hostBefore(eid);
+        allow read: if signedIn() && request.auth.uid == uid;
         allow create: if signedIn() && request.auth.uid == uid
-          && request.resource.data.keys().hasOnly(['email', 'inviteKey'])
+          && request.resource.data.keys().hasOnly(['email', 'inviteKey', 'emailKey'])
           && request.resource.data.email is string
           && request.resource.data.email.size() <= 200
           && request.resource.data.email.matches('^[^@ ]+@[^@ ]+[.][^@ ]+$')
+          && request.resource.data.emailKey is string
+          && request.resource.data.emailKey.size() == 64
           && request.resource.data.inviteKey == get(/databases/$(database)/documents/events/$(eid)/secret/invite).data.key
-          && existsAfter(/databases/$(database)/documents/events/$(eid)/participants/$(uid));
+          && existsAfter(partPath(eid, uid))
+          && getAfter(/databases/$(database)/documents/events/$(eid)/emails/$(request.resource.data.emailKey)).data.uid == uid;
         allow delete: if (signedIn() && request.auth.uid == uid) || hostBefore(eid);
+      }
+
+      // One lock per email (stored as a scrambled hash, not the email), so the same email can't join twice.
+      match /emails/{key} {
+        allow read: if false;
+        allow create: if signedIn()
+          && request.resource.data.keys().hasOnly(['uid'])
+          && request.resource.data.uid == request.auth.uid
+          && existsAfter(partPath(eid, request.auth.uid));
+        // Can be taken over only by the same person, or if the old entry no longer exists (withdrawn/removed).
+        allow update: if signedIn()
+          && request.resource.data.keys().hasOnly(['uid'])
+          && request.resource.data.uid == request.auth.uid
+          && existsAfter(partPath(eid, request.auth.uid))
+          && (resource.data.uid == request.auth.uid || !exists(partPath(eid, resource.data.uid)));
+        allow delete: if signedIn() && resource.data.uid == request.auth.uid;
       }
     }
   }
