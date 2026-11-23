@@ -10,8 +10,10 @@ import {
 const params = new URLSearchParams(location.search);
 const eid = params.get("e");
 // Remember the invite key for this listing in a cookie, so the page still works if reopened without it.
-const key = params.get("k") || getCookie("sl_k_" + eid);
-if (eid && params.get("k")) setCookie("sl_k_" + eid, params.get("k"), 180);
+// (Some apps mangle "&k=" into "&amp;k=" when sharing; accept that too.)
+const linkKey = (params.get("k") || params.get("amp;k") || "").trim();
+const key = linkKey || getCookie("sl_k_" + eid);
+if (eid && linkKey) setCookie("sl_k_" + eid, linkKey, 180);
 
 let uid = null;
 let ev = null;
@@ -127,9 +129,10 @@ async function onJoin(e) {
         ? "The host has closed joining for this listing."
         : h("span", {},
           h("b", {}, "We couldn't add you. "),
-          "Either this email has already joined this listing — open the link in your confirmation email, or check ",
+          "Either this email is already on this listing (check your confirmation email, or ",
           h("a", { href: "mine.html" }, "My gifts"),
-          " on the device you joined from — or this invite link is out of date, in which case ask the host for the newest link."))
+          " on the phone or browser you joined from), or the host has made a new invite link since this one was sent. If so, ask the host for the newest link.",
+          h("br", {}), h("small", { class: "muted" }, `Details: ${err?.code || "error"} · code ${linkKey ? "in link" : key ? "saved" : "missing"} · ${navigator.userAgent.match(/(Discord|Instagram|FBAN|FBAV|Snapchat|TikTok|Line|CriOS|FxiOS|EdgiOS|Chrome|Safari)/)?.[1] || "browser"}`)))
       : friendlyError(err));
   } finally {
     joining = false; submitBtn.disabled = false; submitBtn.textContent = "Ask to join";
@@ -215,6 +218,10 @@ function render() {
     action = null;
   } else if (!ev.joinOpen) {
     action = h("div", { class: "card", style: "text-align:center" }, h("p", { class: "muted" }, "The host isn't accepting new people right now."));
+  } else if (!key) {
+    action = h("div", { class: "card", style: "text-align:center" },
+      h("p", {}, h("b", {}, "This link can only be used to view the listing.")),
+      h("p", { class: "muted", style: "margin:0" }, "To join, ask the host to send you the invite link from their dashboard."));
   } else if (showForm) {
     action = joinForm;
   } else {

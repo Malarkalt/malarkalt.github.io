@@ -110,6 +110,8 @@ export const listingUrl = (eid) => {
   const u = new URL("event.html", location.href);
   u.search = "";
   u.searchParams.set("e", eid);
+  const k = getCookie("sl_k_" + eid);
+  if (k) u.searchParams.set("k", k); // keep the invite code so the link still works for joining if shared
   return u.href;
 };
 
