@@ -2,6 +2,7 @@
 //  1. the host an email when someone asks to join,
 //  2. a participant an email when they're approved,
 //  3. everyone approved (and unpaid) a reminder on the due date, or when the host clicks "Send reminder now".
+//  4. it also fetches the item's picture from its link (if the host didn't upload one) and tidies up old data.
 // Emails are decided from the database itself, so nobody can use the site to send arbitrary emails.
 
 import { initializeApp, cert } from "firebase-admin/app";
@@ -9,19 +10,34 @@ import { getFirestore } from "firebase-admin/firestore";
 import { getAuth } from "firebase-admin/auth";
 import nodemailer from "nodemailer";
 
-const GMAIL_USER = process.env.GMAIL_USER || "splitlistthewebsite@gmail.com";
-const { GMAIL_APP_PASSWORD, FIREBASE_SERVICE_ACCOUNT } = process.env;
-const SITE = (process.env.SITE_URL || "").replace(/\/+$/, "");
+const env = process.env;
+const GMAIL_USER = env.GMAIL_USER || "splitlistthewebsite@gmail.com";
+const SITE = (env.SITE_URL || "").replace(/\/+$/, "");
 const REMINDER_HOUR = 9; // send the due-date reminder from 9am in the host's time zone
+const LIMIT_DAY = 2, LIMIT_WEEK = 3; // manual "Send reminder now" limits (rolling 24h / 7 days)
 
-if (!GMAIL_APP_PASSWORD || !FIREBASE_SERVICE_ACCOUNT || !SITE) {
-  console.error("Missing GMAIL_APP_PASSWORD, FIREBASE_SERVICE_ACCOUNT or SITE_URL.");
+// Email sending: a proper email service (e.g. Resend) if SMTP_HOST is set, so emails come from noreply@your-domain.
+// Otherwise falls back to the Gmail account.
+const useSmtp = !!(env.SMTP_HOST && env.SMTP_PASS);
+if (!env.FIREBASE_SERVICE_ACCOUNT || !SITE || !(useSmtp || env.GMAIL_APP_PASSWORD)) {
+  console.error("Missing FIREBASE_SERVICE_ACCOUNT, SITE_URL, or email settings (SMTP_HOST + SMTP_PASS, or GMAIL_APP_PASSWORD).");
   process.exit(1);
 }
+const FROM = useSmtp
+  ? (env.MAIL_FROM || "SplitList <noreply@splitlist.fyi>")
+  : `"SplitList" <${GMAIL_USER}>`;
+const mailer = useSmtp
+  ? nodemailer.createTransport({
+    host: env.SMTP_HOST,
+    port: Number(env.SMTP_PORT || 465),
+    secure: Number(env.SMTP_PORT || 465) === 465,
+    auth: { user: env.SMTP_USER || "resend", pass: env.SMTP_PASS },
+  })
+  : nodemailer.createTransport({ service: "gmail", auth: { user: GMAIL_USER, pass: env.GMAIL_APP_PASSWORD } });
+console.log(`Sending as ${FROM}`);
 
-initializeApp({ credential: cert(JSON.parse(FIREBASE_SERVICE_ACCOUNT)) });
+initializeApp({ credential: cert(JSON.parse(env.FIREBASE_SERVICE_ACCOUNT)) });
 const db = getFirestore();
-const mailer = nodemailer.createTransport({ service: "gmail", auth: { user: GMAIL_USER, pass: GMAIL_APP_PASSWORD } });
 
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 const money = (n, cur = "$") => cur + (Number(n) || 0).toFixed(2);
@@ -60,7 +76,7 @@ function payBlock(ev) {
 }
 
 async function send(to, subject, text, html) {
-  await mailer.sendMail({ from: `"SplitList" <${GMAIL_USER}>`, to, subject, text, html });
+  await mailer.sendMail({ from: FROM, to, subject, text, html });
   console.log(`  ✉️  ${subject} → ${to.replace(/(.).*(@.*)/, "$1***$2")}`);
 }
 
@@ -71,6 +87,45 @@ async function hostEmail(uid) {
     catch { hostEmails.set(uid, null); }
   }
   return hostEmails.get(uid);
+}
+
+/** Look for the item's picture on its web page (the same picture a chat app would show for the link). */
+async function findThumbnail(pageUrl) {
+  let res;
+  try {
+    res = await fetch(pageUrl, {
+      redirect: "follow",
+      signal: AbortSignal.timeout(10000),
+      headers: {
+        "User-Agent": "Mozilla/5.0 (compatible; SplitListBot/1.0; +" + SITE + ")",
+        "Accept": "text/html,application/xhtml+xml",
+        "Accept-Language": "en",
+      },
+    });
+  } catch { return ""; }
+  if (!res.ok || !(res.headers.get("content-type") || "").includes("html")) return "";
+  const html = (await res.text()).slice(0, 600000);
+  const attr = (tag, name) => (tag.match(new RegExp(name + "\\s*=\\s*([\"'])(.*?)\\1", "i")) || [])[2];
+  const candidates = [];
+  for (const tag of html.match(/<meta\b[^>]*>/gi) || []) {
+    const key = (attr(tag, "property") || attr(tag, "name") || attr(tag, "itemprop") || "").toLowerCase();
+    if (["og:image", "og:image:url", "og:image:secure_url", "twitter:image", "twitter:image:src", "image"].includes(key)) {
+      const c = attr(tag, "content"); if (c) candidates.push(c);
+    }
+  }
+  for (const tag of html.match(/<link\b[^>]*>/gi) || []) {
+    if (/rel\s*=\s*["']image_src["']/i.test(tag)) { const c = attr(tag, "href"); if (c) candidates.push(c); }
+  }
+  // Amazon-style product image
+  const amz = html.match(/id=["']landingImage["'][^>]*?(?:data-old-hires|src)=["']([^"']+)["']/i);
+  if (amz) candidates.push(amz[1]);
+  for (const c of candidates) {
+    try {
+      const u = new URL(c.replace(/&amp;/g, "&").trim(), res.url || pageUrl);
+      if (u.protocol === "https:" || u.protocol === "http:") return u.href.slice(0, 2000);
+    } catch {}
+  }
+  return "";
 }
 
 let failures = 0;
@@ -102,9 +157,9 @@ for (const evDoc of events.docs) {
       const who = await emailOf(p.id);
       if (to) {
         await send(to, `${p.name} wants to chip in on "${ev.title}"`,
-          `${p.name}${who ? ` (${who})` : ""} asked to join "${ev.title}".\n\nApprove or decline them on your dashboard: ${dashUrl}`,
+          `${p.name} asked to join "${ev.title}".\n\nApprove or decline them on your dashboard: ${dashUrl}`,
           layout(`New request: ${esc(p.name)}`,
-            `<p><b>${esc(p.name)}</b>${who ? ` (${esc(who)})` : ""} asked to join <b>${esc(ev.title)}</b>.</p>
+            `<p><b>${esc(p.name)}</b> asked to join <b>${esc(ev.title)}</b>.</p>
              <p>If you approve them, the split will be <b>${money(ev.totalCost / (people + 1), cur)}</b> each across ${people + 1} people${ev.includeHost === false ? "" : " (including you)"}.</p>`,
             { label: "Review on your dashboard", url: dashUrl }));
       }
@@ -141,7 +196,15 @@ for (const evDoc of events.docs) {
   const { date, hour } = nowIn(ev.timeZone || "UTC");
   const dueNow = !!ev.dueDate && (date > ev.dueDate || (date === ev.dueDate && hour >= REMINDER_HOUR));
   const sendDue = dueNow && !ev.reminderSent;
-  if (sendDue || ev.remindNow) {
+  const now = Date.now();
+  const log = (Array.isArray(ev.reminderLog) ? ev.reminderLog : []).map(Number).filter((t) => t > now - 7 * 86400000);
+  let manual = !!ev.remindNow;
+  if (manual && (log.filter((t) => t > now - 86400000).length >= LIMIT_DAY || log.length >= LIMIT_WEEK)) {
+    console.log(`  ⏸  "${ev.title}": manual reminder limit reached, skipping.`);
+    await evDoc.ref.update({ remindNow: false });
+    manual = false;
+  }
+  if (sendDue || manual) {
     const unpaid = approved.filter((p) => !p.paid);
     for (const p of unpaid) {
       await attempt("payment reminder", async () => {
@@ -170,8 +233,36 @@ for (const evDoc of events.docs) {
             { label: "Open dashboard", url: dashUrl }));
       });
     }
-    await evDoc.ref.update({ reminderSent: ev.reminderSent || sendDue, remindNow: false });
+    await evDoc.ref.update({
+      reminderSent: ev.reminderSent || sendDue,
+      remindNow: false,
+      reminderLog: manual ? [...log, now] : log,
+    });
   }
+
+  // 4) Item picture from the link (only if the link changed since we last looked)
+  const link = (ev.itemUrl || "").trim();
+  if ((ev.thumbFor ?? "") !== link) {
+    await attempt("item picture", async () => {
+      const thumb = link ? await findThumbnail(link) : "";
+      console.log(`  🖼  "${ev.title}": ${thumb ? "found item picture" : "no item picture found"}`);
+      await evDoc.ref.update({ thumbUrl: thumb, thumbFor: link });
+    });
+  }
+
+  // 5) Tidy up: release email locks whose person withdrew or was removed
+  await attempt("cleanup", async () => {
+    const ids = new Set(parts.map((p) => p.id));
+    const locks = await evDoc.ref.collection("emails").get();
+    for (const l of locks.docs) if (!ids.has(l.data().uid)) await l.ref.delete();
+  });
 }
+
+// Remove leftovers of listings the host deleted (their sub-data can stay behind otherwise).
+await attempt("deleted listings cleanup", async () => {
+  for (const ref of await db.collection("events").listDocuments()) {
+    if (!(await ref.get()).exists) { await db.recursiveDelete(ref); console.log("  🧹 cleaned up a deleted listing"); }
+  }
+});
 
 console.log(failures ? `Done with ${failures} failure(s).` : "Done.");
