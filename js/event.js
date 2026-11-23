@@ -1,10 +1,10 @@
 import {
   auth, db, $, h, money, safeUrl, formatDue, todayISO, setCookie, getCookie, toast, copyText, friendlyError, byJoined,
-  hostIncluded, hostLabel, splitOf, rememberListing, forgetListing,
+  hostIncluded, hostLabel, splitOf, rememberListing, forgetListing, coverUrl, emailKey, timeAgo, SENDER_EMAIL,
 } from "./common.js";
 import { onAuthStateChanged, signInAnonymously } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
 import {
-  doc, collection, onSnapshot, writeBatch, serverTimestamp,
+  doc, collection, onSnapshot, writeBatch, serverTimestamp, getDoc,
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 
 const params = new URLSearchParams(location.search);
@@ -21,6 +21,19 @@ let wasMember = false;
 let withdrawing = false;
 let showForm = false;
 let joining = false;
+let lastChange = null;     // when anything on this listing last changed
+let loadedEvent = false, loadedParts = false, lastSig = "";
+
+// Note the newest change: the listing's own edit time, anyone joining or being approved/marked paid,
+// and (while the page is open) anything else that changes live, like someone withdrawing.
+function noteChange(date) {
+  if (date && (!lastChange || date > lastChange)) lastChange = date;
+}
+// Keep the "Updated … ago" text fresh without redrawing the page.
+setInterval(() => {
+  const el = document.getElementById("lastUpdated");
+  if (el && lastChange) el.textContent = "Updated " + timeAgo(lastChange);
+}, 20000);
 
 const root = $("#app");
 const message = (title, text) => root.replaceChildren(h("div", { class: "card" }, h("h1", {}, title), h("p", { class: "muted" }, text)));
@@ -46,6 +59,13 @@ function subscribe() {
     if (!s.exists()) { message("Listing not found", "This listing may have been deleted by the host."); ev = null; return; }
     ev = { id: s.id, ...s.data() };
     document.title = ev.title + " · SplitList";
+    noteChange(ev.updatedAt?.toDate?.());
+    // Only count changes people can see (not behind-the-scenes things like the reminder log).
+    const sig = JSON.stringify([ev.title, ev.itemName, ev.itemUrl, ev.totalCost, ev.currency, ev.dueDate, ev.description,
+      ev.paymentType, ev.paymentAddress, ev.status, ev.joinOpen, ev.hostName, ev.includeHost, coverUrl(ev)]);
+    if (loadedEvent && sig !== lastSig) noteChange(new Date());
+    lastSig = sig;
+    loadedEvent = true;
     if (me) rememberListing(eid, ev.title);
     render();
   }, (e) => message("Can't load listing", friendlyError(e)));
@@ -53,6 +73,9 @@ function subscribe() {
   onSnapshot(collection(db, "events", eid, "participants"), (s) => {
     parts = s.docs.map((d) => ({ id: d.id, ...d.data() }));
     me = parts.find((p) => p.id === uid) || null;
+    for (const p of parts) { noteChange(p.joinedAt?.toDate?.()); noteChange(p.updatedAt?.toDate?.()); }
+    if (loadedParts && s.docChanges().length) noteChange(new Date());
+    loadedParts = true;
     if (me) { wasMember = true; if (ev) rememberListing(eid, ev.title); }
     render();
   }, () => {});
@@ -84,11 +107,13 @@ async function onJoin(e) {
   if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) return (formError.textContent = "Please enter a valid email.");
   joining = true; submitBtn.disabled = true; submitBtn.textContent = "Sending…";
   try {
+    const k = await emailKey(email);
     const b = writeBatch(db);
     b.set(doc(db, "events", eid, "participants", uid), {
       name, status: "pending", paid: false, hostNotified: false, approvedNotified: false, joinedAt: serverTimestamp(),
     });
-    b.set(doc(db, "events", eid, "private", uid), { email, inviteKey: key || "" });
+    b.set(doc(db, "events", eid, "private", uid), { email, inviteKey: key || "", emailKey: k });
+    b.set(doc(db, "events", eid, "emails", k), { uid }); // one email = one spot on this listing
     await b.commit();
     setCookie("sl_name", name);
     setCookie("sl_email", email);
@@ -97,11 +122,15 @@ async function onJoin(e) {
     window.scrollTo({ top: 0, behavior: "smooth" });
     toast("Request sent! The host will be emailed to approve you.");
   } catch (err) {
-    formError.textContent = err?.code === "permission-denied"
+    formError.replaceChildren(err?.code === "permission-denied"
       ? (ev && !ev.joinOpen
         ? "The host has closed joining for this listing."
-        : "This invite link is out of date. Ask the host for the newest link.")
-      : friendlyError(err);
+        : h("span", {},
+          h("b", {}, "We couldn't add you. "),
+          "Either this email has already joined this listing — open the link in your confirmation email, or check ",
+          h("a", { href: "mine.html" }, "My gifts"),
+          " on the device you joined from — or this invite link is out of date, in which case ask the host for the newest link."))
+      : friendlyError(err));
   } finally {
     joining = false; submitBtn.disabled = false; submitBtn.textContent = "Ask to join";
   }
@@ -111,9 +140,12 @@ async function withdraw() {
   if (!confirm("Withdraw from this gift? You can ask to join again later if the listing is still open.")) return;
   withdrawing = true;
   try {
+    let k = null;
+    try { k = (await getDoc(doc(db, "events", eid, "private", uid))).data()?.emailKey || null; } catch {}
     const b = writeBatch(db);
     b.delete(doc(db, "events", eid, "participants", uid));
     b.delete(doc(db, "events", eid, "private", uid));
+    if (k) b.delete(doc(db, "events", eid, "emails", k));
     await b.commit();
     wasMember = false;
     forgetListing(eid);
@@ -147,13 +179,13 @@ function render() {
   else if (isPending) banner = h("div", { class: "banner warn" },
     h("strong", {}, "⏳ Waiting for the host to approve you"),
     h("p", { style: "margin:0 0 .5rem" }, `The host has been emailed. Once you're approved, your share will be about ${money(myShare, cur)}.`),
-    h("p", { style: "margin:0" }, "📧 A confirmation email from ", h("b", {}, "SplitList (splitlistthewebsite@gmail.com)"),
+    h("p", { style: "margin:0" }, "📧 A confirmation email from ", h("b", {}, `SplitList (${SENDER_EMAIL})`),
       " has been sent to you with a link back to this listing. It can take up to 15 minutes and is most likely in your ",
       h("b", {}, "spam or junk folder"), ". Mark it as \"Not spam\" so you also get the approval and payment reminder emails."));
   else if (isApproved) banner = h("div", { class: "banner ok" },
     h("strong", {}, `✅ You're in! Your share is ${money(share, cur)}`),
     me.paid ? "The host has marked you as paid. Thank you!" : `Please pay by ${formatDue(ev.dueDate)} using the payment info below.`,
-    h("p", { style: "margin:.5rem 0 0" }, "📧 A confirmation email from ", h("b", {}, "SplitList (splitlistthewebsite@gmail.com)"),
+    h("p", { style: "margin:.5rem 0 0" }, "📧 A confirmation email from ", h("b", {}, `SplitList (${SENDER_EMAIL})`),
       " has been sent to you with a link back to this listing. It can take up to 15 minutes and is most likely in your ",
       h("b", {}, "spam or junk folder"), ". Mark it as \"Not spam\" so you also get the payment reminder."));
   else if (wasMember && !withdrawing && !joining) banner = h("div", { class: "banner danger" },
@@ -195,6 +227,7 @@ function render() {
     banner,
 
     h("div", { class: "card" },
+      coverUrl(ev) ? h("img", { class: "cover", src: coverUrl(ev), alt: ev.itemName || ev.title, referrerpolicy: "no-referrer", onerror: (e) => e.target.remove() }) : null,
       h("h1", {}, ev.title),
       itemName ? h("div", { class: "hero-item" }, "🎁 ",
         url ? h("a", { href: url, target: "_blank", rel: "noopener noreferrer" }, itemName + " ↗") : itemName) : null,
@@ -204,8 +237,8 @@ function render() {
         h("div", {}, h("span", { class: "muted" }, "Pay by"), h("b", {}, formatDue(ev.dueDate)),
           ev.dueDate < today && !closed ? h("span", { class: "badge danger" }, "Past due") :
           ev.dueDate === today && !closed ? h("span", { class: "badge warn" }, "Due today") : null)),
-      ev.updatedAt?.toDate ? h("p", { class: "hint", style: "margin-top:1rem" },
-        "Last updated " + ev.updatedAt.toDate().toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }),
+      lastChange ? h("p", { class: "hint", style: "margin-top:1rem" },
+        h("span", { id: "lastUpdated", title: lastChange.toLocaleString() }, "Updated " + timeAgo(lastChange)),
         " · this page updates live") : null),
 
     h("div", { class: "card" },

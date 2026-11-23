@@ -1,6 +1,6 @@
 import {
   auth, db, $, $$, h, money, safeUrl, formatDue, todayISO, randomKey, toast, copyText, friendlyError, byJoined,
-  hostIncluded, hostLabel, splitOf,
+  hostIncluded, hostLabel, splitOf, coverUrl, resizeImage, remindersLeft, timeAgo, REMINDER_LIMITS,
 } from "./common.js";
 import { onAuthStateChanged, signOut, sendEmailVerification } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
 import {
@@ -13,7 +13,7 @@ let filter = "active";
 let current = null;        // id of the listing being viewed
 let editingId = null;      // id of the listing being edited (null = creating)
 let participants = [];
-let emails = {};
+let picData;               // picture in the form: undefined = unchanged, "" = removed, "data:..." = new upload
 let inviteKey;             // undefined = loading, null = missing
 let detailUnsubs = [];
 const counts = {};        // eventId -> { approved, pending }
@@ -75,6 +75,7 @@ function renderList() {
   }
   root.replaceChildren(h("div", { class: "cards" }, list.map((ev) =>
     h("button", { class: "card event-card", onclick: () => openDetail(ev.id) },
+      coverUrl(ev) ? h("img", { class: "card-thumb", src: coverUrl(ev), alt: "", loading: "lazy", referrerpolicy: "no-referrer" }) : null,
       h("h3", {}, ev.title),
       h("p", { class: "muted" }, ev.itemName || "—"),
       cardStats(ev),
@@ -141,7 +142,41 @@ function fillForm(ev = {}) {
   $("#fHostName").value = ev.hostName ?? (localStorage.getItem("sl_host_name") || "");
   $("#fIncludeHost").checked = ev.id ? hostIncluded(ev) : true;
   $("#formError").textContent = "";
+  picData = undefined;
+  $("#fPic").value = "";
+  showPic(ev);
 }
+
+function showPic(ev = {}) {
+  const custom = picData !== undefined ? picData : ev.imageData || "";
+  const src = custom || (picData === undefined || picData === "" ? ev.thumbUrl : "") || "";
+  const box = $("#picPreview");
+  box.replaceChildren(src ? h("img", { src, alt: "", referrerpolicy: "no-referrer" }) : h("span", { class: "muted" }, "No picture"));
+  $("#picRemove").classList.toggle("hidden", !custom);
+  $("#picHint").textContent = custom
+    ? "Your picture will show on the listing."
+    : src
+      ? "Using the item's picture from its link. Upload your own to replace it."
+      : "Optional. If you don't add one, we'll use the item's picture from its link (this can take ~10 minutes to appear, and some stores like Amazon may block it).";
+}
+
+$("#fPic").addEventListener("change", async (e) => {
+  const file = e.target.files[0];
+  if (!file) return;
+  try {
+    $("#picHint").textContent = "Preparing picture…";
+    picData = await resizeImage(file);
+    showPic(events.find((x) => x.id === editingId) || {});
+  } catch (err) {
+    toast(err.message, "error");
+    showPic(events.find((x) => x.id === editingId) || {});
+  }
+});
+$("#picRemove").addEventListener("click", () => {
+  picData = "";
+  $("#fPic").value = "";
+  showPic(events.find((x) => x.id === editingId) || {});
+});
 
 function openCreate() {
   stopDetail(); current = null; editingId = null;
@@ -174,6 +209,7 @@ function readForm() {
     hostName: $("#fHostName").value.trim().slice(0, 60),
     includeHost: $("#fIncludeHost").checked,
   };
+  if (picData !== undefined) data.imageData = picData;
   if (!data.title) return [null, "Give your listing a name."];
   if (data.itemUrl && !safeUrl(data.itemUrl)) return [null, "The item link should start with https://"];
   if (!(data.totalCost > 0)) return [null, "Enter the total cost."];
@@ -227,7 +263,7 @@ $("#eventForm").addEventListener("submit", async (e) => {
 function openDetail(id) {
   stopDetail();
   current = id; editingId = null;
-  participants = []; emails = {}; inviteKey = undefined;
+  participants = []; inviteKey = undefined;
   show("detailView");
   renderDetail();
 
@@ -235,11 +271,6 @@ function openDetail(id) {
     participants = s.docs.map((d) => ({ id: d.id, ...d.data() }));
     renderDetail();
   }, (e) => toast(friendlyError(e), "error")));
-
-  detailUnsubs.push(onSnapshot(collection(db, "events", id, "private"), (s) => {
-    emails = Object.fromEntries(s.docs.map((d) => [d.id, d.data().email]));
-    renderDetail();
-  }, () => {}));
 
   getDoc(doc(db, "events", id, "secret", "invite"))
     .then((d) => { if (current === id) { inviteKey = d.exists() ? d.data().key : null; renderDetail(); } })
@@ -281,11 +312,13 @@ function renderDetail() {
   const pct = ev.totalCost ? Math.min(100, (collected / ev.totalCost) * 100) : 0;
   const archived = ev.status === "archived";
 
-  root.replaceChildren(
+  root.replaceChildren(...[
     h("button", { class: "linkbtn back", onclick: backToList }, "← All listings"),
 
     h("div", { class: "row between wrapflex" },
-      h("div", {}, h("h1", {}, ev.title), h("div", { class: "muted" }, itemLine(ev))),
+      h("div", { class: "row" },
+        coverUrl(ev) ? h("img", { class: "detail-thumb", src: coverUrl(ev), alt: "", referrerpolicy: "no-referrer" }) : null,
+        h("div", {}, h("h1", {}, ev.title), h("div", { class: "muted" }, itemLine(ev)))),
       dueBadge(ev)),
 
     h("div", { class: "stats" },
@@ -324,7 +357,7 @@ function renderDetail() {
       h("h2", {}, "Join requests ", pending.length ? h("span", { class: "badge warn" }, String(pending.length)) : null),
       pending.length
         ? h("ul", { class: "people" }, pending.map((p) => h("li", {},
-          h("div", { class: "who" }, h("b", {}, p.name), h("small", {}, emails[p.id] || ""), h("small", {}, "Asked " + when(p.joinedAt))),
+          h("div", { class: "who" }, h("b", {}, p.name), h("small", {}, "Asked " + when(p.joinedAt))),
           h("div", { class: "acts" },
             h("button", { class: "btn sm", onclick: () => setStatus(ev, p, "approved") }, "Approve"),
             h("button", { class: "btn danger ghost sm", onclick: () => removePerson(ev, p, "Decline") }, "Decline")))))
@@ -332,19 +365,26 @@ function renderDetail() {
 
     // Approved participants
     h("div", { class: "card" },
-      h("h2", {}, "Participants"),
+      h("div", { class: "row between wrapflex" },
+        h("h2", { style: "margin:0" }, "Participants"),
+        h("button", { class: "btn ghost sm", onclick: () => toggleSelf(ev) }, withHost ? "Leave me out of the split" : "Include me in the split")),
+      h("div", { style: "height:.5rem" }),
       withHost || approved.length
         ? h("ul", { class: "people" }, withHost ? h("li", { class: "me" },
           h("div", { class: "who" }, h("b", {}, hostLabel(ev), " (you)"), h("small", {}, "Host — your share counts as covered")),
           h("div", { class: "acts" }, h("span", { class: "badge accent" }, "Host"), h("span", { class: "amount" }, money(share, cur)))) : null,
           approved.map((p) => h("li", {},
-          h("div", { class: "who" }, h("b", {}, p.name), h("small", {}, emails[p.id] || "")),
+          h("div", { class: "who" }, h("b", {}, p.name), p.addedByHost ? h("small", {}, "Added by you · no emails") : null),
           h("div", { class: "acts" },
             h("span", { class: "amount" }, money(share, cur)),
             h("button", { class: p.paid ? "btn sm" : "btn ghost sm", onclick: () => togglePaid(ev, p), title: "Toggle paid" }, p.paid ? "Paid ✓" : "Mark paid"),
-            h("button", { class: "btn ghost sm", onclick: () => setStatus(ev, p, "pending"), title: "Move back to requests" }, "Unapprove"),
+            p.addedByHost ? null : h("button", { class: "btn ghost sm", onclick: () => setStatus(ev, p, "pending"), title: "Move back to requests" }, "Unapprove"),
             h("button", { class: "btn danger ghost sm", onclick: () => removePerson(ev, p, "Remove") }, "Remove")))))
-        : h("p", { class: "muted" }, "Nobody approved yet.")),
+        : h("p", { class: "muted" }, "Nobody approved yet."),
+      h("form", { class: "addrow", onsubmit: (e) => addByName(e, ev) },
+        h("input", { class: "input", name: "name", maxlength: "60", placeholder: "Add someone by name (e.g. Grandma)", "aria-label": "Name" }),
+        h("button", { class: "btn", type: "submit" }, "Add")),
+      h("p", { class: "hint" }, "People you add by name are counted in the split right away. They don't get any emails.")),
 
     // Listing info
     h("div", { class: "card" },
@@ -360,16 +400,16 @@ function renderDetail() {
       h("h2", {}, "Manage"),
       h("div", { class: "row wrapflex" },
         h("button", { class: "btn ghost", onclick: () => openEdit(ev) }, "Edit listing"),
-        !archived && h("button", { class: "btn ghost", onclick: () => remindNow(ev, approved), disabled: ev.remindNow ? true : null },
+        !archived && h("button", { class: "btn ghost", onclick: () => remindNow(ev, approved), disabled: (ev.remindNow || !remindersLeft(ev).left) ? true : null },
           ev.remindNow ? "Reminder queued…" : "Send payment reminder now"),
-        h("button", { class: "btn ghost", onclick: () => copyEmails(approved) }, "Copy participant emails"),
         h("button", { class: "btn ghost", onclick: () => toggleArchive(ev) }, archived ? "Unarchive" : "Archive"),
         h("button", { class: "btn danger ghost", onclick: () => deleteEvent(ev) }, "Delete")),
+      !archived && h("p", { class: "hint" }, reminderLimitText(ev)),
       h("p", { class: "hint" },
         ev.reminderSent
           ? "The due-date reminder has already been emailed."
           : `Everyone approved will automatically get a payment reminder on ${formatDue(ev.dueDate)}. Emails go out within about 10–15 minutes.`)),
-  );
+  ].filter(Boolean));  // skip empty parts so the page never shows "null"
 }
 
 function when(ts) {
@@ -383,11 +423,43 @@ async function run(fn, okMsg) {
 }
 
 const setStatus = (ev, p, status) =>
-  run(() => updateDoc(doc(db, "events", ev.id, "participants", p.id), { status }),
+  run(() => updateDoc(doc(db, "events", ev.id, "participants", p.id), { status, updatedAt: serverTimestamp() }),
     status === "approved" ? `${p.name} approved — they'll get an email.` : `${p.name} moved back to requests.`);
 
 const togglePaid = (ev, p) =>
-  run(() => updateDoc(doc(db, "events", ev.id, "participants", p.id), { paid: !p.paid }));
+  run(() => updateDoc(doc(db, "events", ev.id, "participants", p.id), { paid: !p.paid, updatedAt: serverTimestamp() }));
+
+async function addByName(e, ev) {
+  e.preventDefault();
+  const input = e.target.elements.name;
+  const name = input.value.trim().slice(0, 60);
+  if (!name) { input.focus(); return; }
+  await run(async () => {
+    await setDoc(doc(collection(db, "events", ev.id, "participants")), {
+      name, status: "approved", paid: false, addedByHost: true,
+      hostNotified: true, approvedNotified: true,
+      joinedAt: serverTimestamp(), updatedAt: serverTimestamp(),
+    });
+    input.value = "";
+  }, `${name} added to the split.`);
+}
+
+const toggleSelf = (ev) =>
+  run(() => updateDoc(doc(db, "events", ev.id), { includeHost: !hostIncluded(ev), updatedAt: serverTimestamp() }),
+    hostIncluded(ev) ? "You're no longer counted in the split." : "You're now counted in the split.");
+
+function reminderLimitText(ev) {
+  const r = remindersLeft(ev);
+  const limits = `You can send up to ${REMINDER_LIMITS.day} reminders a day and ${REMINDER_LIMITS.week} a week.`;
+  if (r.left) return `${limits} ${r.left} left right now.`;
+  return `${limits} You've reached the limit — you can send another ${r.nextAt ? timeAgoFuture(r.nextAt) : "later"}.`;
+}
+function timeAgoFuture(d) {
+  const hrs = Math.ceil((d.getTime() - Date.now()) / 3600000);
+  if (hrs <= 1) return "in about an hour";
+  if (hrs < 24) return `in about ${hrs} hours`;
+  return "on " + d.toLocaleString(undefined, { weekday: "long", hour: "numeric", minute: "2-digit" });
+}
 
 function removePerson(ev, p, verb) {
   if (!confirm(`${verb} ${p.name}?`)) return;
@@ -400,7 +472,7 @@ function removePerson(ev, p, verb) {
 }
 
 const toggleJoin = (ev) =>
-  run(() => updateDoc(doc(db, "events", ev.id), { joinOpen: !ev.joinOpen }), ev.joinOpen ? "Joining closed." : "Joining reopened.");
+  run(() => updateDoc(doc(db, "events", ev.id), { joinOpen: !ev.joinOpen, updatedAt: serverTimestamp() }), ev.joinOpen ? "Joining closed." : "Joining reopened.");
 
 function newLink(ev, askFirst) {
   if (askFirst && !confirm("Make a new invite link? The old link will still show the listing, but nobody new can join with it.")) return;
@@ -415,14 +487,10 @@ function newLink(ev, askFirst) {
 function remindNow(ev, approved) {
   const unpaid = approved.filter((p) => !p.paid);
   if (!unpaid.length) { toast("Everyone approved has already paid 🎉"); return; }
+  if (!remindersLeft(ev).left) { toast(reminderLimitText(ev), "error"); return; }
+  if (!unpaid.some((p) => !p.addedByHost)) { toast("Nobody unpaid has an email — people you added by name don't get reminders."); return; }
   if (!confirm(`Email a payment reminder to ${unpaid.length} ${unpaid.length === 1 ? "person who hasn't" : "people who haven't"} paid yet?`)) return;
   run(() => updateDoc(doc(db, "events", ev.id), { remindNow: true }), "Reminder queued — it'll be emailed within ~10–15 minutes.");
-}
-
-function copyEmails(approved) {
-  const list = approved.map((p) => emails[p.id]).filter(Boolean);
-  if (!list.length) { toast("No participant emails yet."); return; }
-  copyText(list.join(", "));
 }
 
 const toggleArchive = (ev) =>
@@ -432,14 +500,13 @@ const toggleArchive = (ev) =>
 async function deleteEvent(ev) {
   if (!confirm(`Permanently delete "${ev.title}" and everyone on it? This can't be undone.\n\nTip: use Archive if you just want to close it.`)) return;
   try {
-    const [parts, privs] = await Promise.all([
-      getDocs(collection(db, "events", ev.id, "participants")),
-      getDocs(collection(db, "events", ev.id, "private")),
-    ]);
+    const parts = await getDocs(collection(db, "events", ev.id, "participants"));
     stopDetail();
     const b = writeBatch(db);
-    parts.forEach((d) => b.delete(d.ref));
-    privs.forEach((d) => b.delete(d.ref));
+    parts.forEach((d) => {
+      b.delete(d.ref);
+      b.delete(doc(db, "events", ev.id, "private", d.id));
+    });
     b.delete(doc(db, "events", ev.id, "secret", "invite"));
     b.delete(doc(db, "events", ev.id));
     await b.commit();
