@@ -139,7 +139,10 @@ console.log(`Checking ${events.size} active listing(s)…`);
 for (const evDoc of events.docs) {
   const ev = { id: evDoc.id, ...evDoc.data() };
   const cur = ev.currency || "$";
-  const listingUrl = `${SITE}/event.html?e=${encodeURIComponent(ev.id)}`;
+  // Include the current invite code, so a forwarded email link still lets friends join.
+  let inviteCode = "";
+  try { inviteCode = (await evDoc.ref.collection("secret").doc("invite").get()).data()?.key || ""; } catch {}
+  const listingUrl = `${SITE}/event.html?e=${encodeURIComponent(ev.id)}${inviteCode ? `&k=${encodeURIComponent(inviteCode)}` : ""}`;
   const dashUrl = `${SITE}/dashboard.html`;
 
   const partsSnap = await evDoc.ref.collection("participants").get();
